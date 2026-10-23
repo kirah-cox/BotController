@@ -1,5 +1,40 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
 </head>
+<body>
+    
+    Hello
+
+    <!-- Button to indicate an api call-->
+    
+    <p><span id="information"></span></p>
+    <p><span id="health"></span></p>
+
+    <script>
+        window.addEventListener("load", () => {
+            console.log("page loaded");
+
+            const info = document.getElementById("information");
+            info.append("loaded");
+
+            checkHealth();
+        })
+
+        async function checkHealth() {
+            const health = document.getElementById("health");
+            try {
+                const response = await fetch("/api/health");
+                const status = await response.text();
+                health.textContent = `API health: ${status}`;
+            } catch (error) {
+                health.textContent = `API health: unreachable (${error.message})`;
+            }
+        }
+
+    </script>
+</body>
+</html>
