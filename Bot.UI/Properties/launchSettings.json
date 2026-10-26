@@ -10,6 +10,16 @@
         "ASPNETCORE_ENVIRONMENT": "Development"
       }
     },
+    "local": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": true,
+      "applicationUrl": "http://localhost:5114",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "NetRts__Server": "http://localhost:5080"
+      }
+    },
     "https": {
       "commandName": "Project",
       "dotnetRunMessages": true,

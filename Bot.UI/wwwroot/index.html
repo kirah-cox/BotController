@@ -3,26 +3,110 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>Bot Controller</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+
+        /* While there's a match to watch: controls on the left, the game on the right. */
+        body.watching { max-width: none; margin: 1rem 0; }
+        .layout { display: flex; gap: 1rem; align-items: flex-start; }
+        .controls { flex: 1; min-width: 0; }
+        body.watching .controls { flex: 0 0 420px; }
+        #viewer { flex: 1; position: sticky; top: 1rem; height: calc(100vh - 2rem); }
+        #viewer iframe { width: 100%; height: 100%; border: 1px solid #ccc; border-radius: 8px; }
+        @media (max-width: 900px) {
+            .layout { flex-direction: column; }
+            body.watching .controls { flex: none; width: 100%; }
+            #viewer { position: static; width: 100%; height: 70vh; }
+        }
+
+        section { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+        h2 { margin-top: 0; font-size: 1.1rem; }
+        label { display: inline-block; margin: 0.25rem 0.5rem 0.25rem 0; }
+        button { margin: 0.25rem 0.5rem 0.25rem 0; }
+        #error { color: #b00020; }
+        #log { background: #f4f4f4; padding: 0.5rem; max-height: 300px; overflow-y: auto; font-size: 0.85rem; }
+        .hidden { display: none; }
+    </style>
 </head>
 <body>
-    
-    Hello
-
-    <!-- Button to indicate an api call-->
-    
-    <p><span id="information"></span></p>
+  <div class="layout">
+   <div class="controls">
+    <h1>Bot Controller</h1>
     <p><span id="health"></span></p>
+    <p>Game server: <a id="server" target="_blank"></a></p>
+    <p id="error"></p>
+
+    <!-- Step 1: sign the bot up with the game server (only needed once) -->
+    <section id="register-section" class="hidden">
+        <h2>Register your bot</h2>
+        <label>Bot name <input id="bot-name" placeholder="3-32 letters, digits, - or _"></label>
+        <button id="register-button">Register</button>
+    </section>
+
+    <!-- Step 2: get into a match -->
+    <section id="start-section" class="hidden">
+        <h2>Start a match</h2>
+        <label>Speed (ms per tick) <input id="tick-ms" type="number" value="1000" min="100" max="10000"></label>
+        <div>
+            <label>Opponent
+                <select id="opponent">
+                    <option value="sitter">Sleepy Sitter (easiest)</option>
+                    <option value="economist">Grub Hoarder</option>
+                    <option value="balanced">Blue Badger</option>
+                    <option value="rusher">Honey Badger (hardest)</option>
+                </select>
+            </label>
+            <button id="play-house-button">Play house bot</button>
+        </div>
+        <div>
+            <label>Match name <input id="match-name" placeholder="our-game"></label>
+            <button id="create-button">Create</button>
+            <button id="join-button">Join</button>
+        </div>
+    </section>
+
+    <!-- Step 3: watch it play -->
+    <section>
+        <h2>Status</h2>
+        <p>Bot: <strong id="player-name">-</strong> &middot; <span id="phase">-</span></p>
+        <p id="match-info"></p>
+        <p><a id="watch-link" class="hidden" target="_blank">Watch the match live</a></p>
+        <button id="stop-button" class="hidden">Surrender &amp; stop</button>
+        <pre id="log"></pre>
+    </section>
+   </div>
+
+    <!-- The game server's live spectator view of the current match -->
+    <div id="viewer" class="hidden">
+        <iframe id="viewer-frame" title="Live match"></iframe>
+    </div>
+  </div>
 
     <script>
+        const busyPhases = ["Joining", "Waiting for players", "Playing"];
+
         window.addEventListener("load", () => {
-            console.log("page loaded");
-
-            const info = document.getElementById("information");
-            info.append("loaded");
-
             checkHealth();
-        })
+
+            document.getElementById("register-button").addEventListener("click", () =>
+                post("/api/bot/register", { name: document.getElementById("bot-name").value }));
+
+            document.getElementById("play-house-button").addEventListener("click", () =>
+                post("/api/bot/start", { opponent: document.getElementById("opponent").value, tickMs: tickMs() }));
+
+            document.getElementById("create-button").addEventListener("click", () =>
+                post("/api/bot/start", { createMatch: document.getElementById("match-name").value, tickMs: tickMs() }));
+
+            document.getElementById("join-button").addEventListener("click", () =>
+                post("/api/bot/start", { joinMatch: document.getElementById("match-name").value }));
+
+            document.getElementById("stop-button").addEventListener("click", () =>
+                post("/api/bot/stop"));
+
+            refreshStatus();
+            setInterval(refreshStatus, 1000);
+        });
 
         async function checkHealth() {
             const health = document.getElementById("health");
@@ -35,6 +119,74 @@
             }
         }
 
+        function tickMs() {
+            return Number(document.getElementById("tick-ms").value) || 1000;
+        }
+
+        // Sends a command to our backend, then shows the status it answers with (or its error).
+        async function post(url, body) {
+            const error = document.getElementById("error");
+            error.textContent = "";
+            try {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body ?? {})
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    error.textContent = data.message ?? `Request failed (${response.status})`;
+                    return;
+                }
+                showStatus(data);
+            } catch (e) {
+                error.textContent = `Request failed: ${e.message}`;
+            }
+        }
+
+        async function refreshStatus() {
+            try {
+                const response = await fetch("/api/bot/status");
+                showStatus(await response.json());
+            } catch (e) {
+                document.getElementById("phase").textContent = `backend unreachable (${e.message})`;
+            }
+        }
+
+        function showStatus(status) {
+            const busy = busyPhases.includes(status.phase);
+
+            const server = document.getElementById("server");
+            server.textContent = status.server;
+            server.href = status.server;
+
+            document.getElementById("register-section").classList.toggle("hidden", status.registered);
+            document.getElementById("start-section").classList.toggle("hidden", !status.registered || busy);
+            document.getElementById("stop-button").classList.toggle("hidden", !busy);
+
+            document.getElementById("player-name").textContent = status.playerName ?? "not registered";
+            document.getElementById("phase").textContent = status.phase;
+
+            document.getElementById("match-info").textContent = status.tick == null ? "" :
+                `Tick ${status.tick} / ${status.maxTicks} · ${status.ore} grubs · ${status.units} badgers · ${status.buildings} buildings`;
+
+            const watch = document.getElementById("watch-link");
+            watch.classList.toggle("hidden", !status.watchUrl);
+            if (status.watchUrl) {
+                watch.href = status.watchUrl;
+            }
+
+            // Status refreshes every second, so only load the game view when the match changes.
+            const frame = document.getElementById("viewer-frame");
+            document.body.classList.toggle("watching", !!status.watchUrl);
+            document.getElementById("viewer").classList.toggle("hidden", !status.watchUrl);
+            if (status.watchUrl && frame.dataset.url !== status.watchUrl) {
+                frame.dataset.url = status.watchUrl;
+                frame.src = status.watchUrl;
+            }
+
+            document.getElementById("log").textContent = status.log.join("\n");
+        }
     </script>
 </body>
 </html>
