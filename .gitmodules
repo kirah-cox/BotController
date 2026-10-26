@@ -1,0 +1,3 @@
+[submodule "NetRTS"]
+	path = NetRTS
+	url = https://github.com/SnowSE/NetRTS.git
