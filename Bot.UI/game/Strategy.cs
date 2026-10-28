@@ -6,9 +6,10 @@ namespace Bot.UI.Game;
 //
 // This is the NetRTS starter bot's plan: gather, train 8 workers, build a Barracks, train
 // soldiers, attack with 5. It beats "sitter" and sometimes "economist".
+// The numbers come from `plan` (see Plan.cs), which the web page's buttons change.
 public static class Strategy
 {
-    public static List<object> Decide(GameState s)
+    public static List<object> Decide(GameState s, Plan plan)
     {
         var commands = new List<object>();
         var ore = s.You.Resources;  // what we can still spend this tick
@@ -23,28 +24,28 @@ public static class Strategy
             commands.Add(gather);
         }
 
-        var worker = TrainWorker(s, ore);
+        var worker = TrainWorker(s, plan, ore);
         if (worker != null)
         {
             commands.Add(worker);
             ore -= 50;
         }
 
-        var barracks = BuildBarracks(s, ore);
+        var barracks = BuildBarracks(s, plan, ore);
         if (barracks != null)
         {
             commands.Add(barracks);
             ore -= 150;
         }
 
-        var soldier = TrainSoldier(s, ore);
+        var soldier = TrainSoldier(s, plan, ore);
         if (soldier != null)
         {
             commands.Add(soldier);
-            ore -= 100;
+            ore -= plan.ArmyCost;
         }
 
-        var attack = Attack(s);
+        var attack = Attack(s, plan);
         if (attack != null)
         {
             commands.Add(attack);
@@ -66,11 +67,11 @@ public static class Strategy
         return new { type = "Gather", units = "idle", unitType = "Worker", targetId = closest.Id };
     }
 
-    // 2. Train workers until we have 8 (a Worker costs 50 ore).
-    private static object? TrainWorker(GameState s, int ore)
+    // 2. Train workers until we have plan.Workers (a Worker costs 50 ore).
+    private static object? TrainWorker(GameState s, Plan plan, int ore)
     {
         var hq = MyBuilding(s, "CommandCenter")!;
-        if (MyUnits(s, "Worker").Count >= 8 || hq.Production is { Count: > 0 } || ore < 50)
+        if (MyUnits(s, "Worker").Count >= plan.Workers || hq.Production is { Count: > 0 } || ore < 50)
         {
             return null;
         }
@@ -79,10 +80,10 @@ public static class Strategy
     }
 
     // 3. Then build one Barracks (150 ore), 4 tiles from the headquarters toward the middle of the map.
-    private static object? BuildBarracks(GameState s, int ore)
+    private static object? BuildBarracks(GameState s, Plan plan, int ore)
     {
         var workers = MyUnits(s, "Worker");
-        if (workers.Count < 8 || MyBuilding(s, "Barracks") != null || ore < 150)
+        if (workers.Count < plan.Workers || MyBuilding(s, "Barracks") != null || ore < 150)
         {
             return null;
         }
@@ -93,23 +94,23 @@ public static class Strategy
         return new { type = "Build", unitIds = new[] { workers[0].Id }, buildingType = "Barracks", x, y };
     }
 
-    // 4. The Barracks trains soldiers non-stop (a Soldier costs 100 ore).
-    private static object? TrainSoldier(GameState s, int ore)
+    // 4. The Barracks trains plan.ArmyUnit non-stop (a Soldier costs 100 ore).
+    private static object? TrainSoldier(GameState s, Plan plan, int ore)
     {
         var barracks = MyBuilding(s, "Barracks");
-        if (barracks == null || !barracks.Completed || barracks.Production is { Count: > 0 } || ore < 100)
+        if (barracks == null || !barracks.Completed || barracks.Production is { Count: > 0 } || ore < plan.ArmyCost)
         {
             return null;
         }
 
-        return new { type = "Produce", buildingId = barracks.Id, unitType = "Soldier" };
+        return new { type = "Produce", buildingId = barracks.Id, unitType = plan.ArmyUnit };
     }
 
-    // 5. Once we have 5 soldiers, send every idle soldier to attack the nearest enemy's starting corner.
-    private static object? Attack(GameState s)
+    // 5. Once we have plan.AttackSize soldiers, send every idle soldier to attack the nearest enemy's starting corner.
+    private static object? Attack(GameState s, Plan plan)
     {
-        var soldiers = MyUnits(s, "Soldier");
-        if (soldiers.Count < 5)
+        var soldiers = MyUnits(s, plan.ArmyUnit);
+        if (soldiers.Count < plan.AttackSize)
         {
             return null;
         }
@@ -122,7 +123,7 @@ public static class Strategy
             return null;
         }
 
-        return new { type = "Attack", units = "idle", unitType = "Soldier", x = enemy.StartPosition.X, y = enemy.StartPosition.Y };
+        return new { type = "Attack", units = "idle", unitType = plan.ArmyUnit, x = enemy.StartPosition.X, y = enemy.StartPosition.Y };
     }
 
     // Helpers: our own units (of one type, or all of them) and our first building of a type.

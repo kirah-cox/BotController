@@ -27,6 +27,10 @@
         #error { color: #b00020; }
         #log { background: #f4f4f4; padding: 0.5rem; max-height: 300px; overflow-y: auto; font-size: 0.85rem; }
         .hidden { display: none; }
+        .setting { display: flex; align-items: center; gap: 0.5rem; margin: 0.25rem 0; }
+        .setting > span:first-child { width: 11rem; }
+        .setting strong { min-width: 2rem; text-align: center; }
+        #army-unit-buttons button.active { font-weight: bold; outline: 2px solid #1a73e8; }
     </style>
 </head>
 <body>
@@ -63,6 +67,27 @@
             <label>Match name <input id="match-name" placeholder="our-game"></label>
             <button id="create-button">Create</button>
             <button id="join-button">Join</button>
+        </div>
+    </section>
+
+    <!-- Pick how the bot plays; can be changed before or during a match -->
+    <section id="strategy-section" class="hidden">
+        <h2>Strategy</h2>
+        <div class="setting">
+            <span>Workers to train</span>
+            <button data-setting="workers" data-step="-1">&minus;</button>
+            <strong id="workers-value">-</strong>
+            <button data-setting="workers" data-step="1">+</button>
+        </div>
+        <div class="setting">
+            <span>Army unit</span>
+            <span id="army-unit-buttons"></span>
+        </div>
+        <div class="setting">
+            <span>Attack once army has</span>
+            <button data-setting="attackSize" data-step="-1">&minus;</button>
+            <strong id="attackSize-value">-</strong>
+            <button data-setting="attackSize" data-step="1">+</button>
         </div>
     </section>
 
@@ -103,6 +128,15 @@
 
             document.getElementById("stop-button").addEventListener("click", () =>
                 post("/api/bot/stop"));
+
+            // The - / + buttons nudge one number in the plan.
+            for (const button of document.querySelectorAll("[data-setting]")) {
+                button.addEventListener("click", () => {
+                    const setting = button.dataset.setting;
+                    const current = Number(document.getElementById(`${setting}-value`).textContent);
+                    post("/api/bot/strategy", { [setting]: current + Number(button.dataset.step) });
+                });
+            }
 
             refreshStatus();
             setInterval(refreshStatus, 1000);
@@ -161,6 +195,8 @@
             server.href = status.server;
 
             document.getElementById("register-section").classList.toggle("hidden", status.registered);
+            document.getElementById("strategy-section").classList.toggle("hidden", !status.registered);
+            showStrategies(status);
             document.getElementById("start-section").classList.toggle("hidden", !status.registered || busy);
             document.getElementById("stop-button").classList.toggle("hidden", !busy);
 
@@ -186,6 +222,27 @@
             }
 
             document.getElementById("log").textContent = status.log.join("\n");
+        }
+
+        // Shows the current plan: the numbers, plus one button per army unit with the chosen one highlighted.
+        function showStrategies(status) {
+            document.getElementById("workers-value").textContent = status.strategy.workers;
+            document.getElementById("attackSize-value").textContent = status.strategy.attackSize;
+
+            const units = document.getElementById("army-unit-buttons");
+            if (units.children.length !== status.armyUnits.length) {
+                units.replaceChildren(...status.armyUnits.map(unit => {
+                    const button = document.createElement("button");
+                    button.textContent = unit;
+                    button.dataset.unit = unit;
+                    button.addEventListener("click", () => post("/api/bot/strategy", { armyUnit: unit }));
+                    return button;
+                }));
+            }
+
+            for (const button of units.children) {
+                button.classList.toggle("active", button.dataset.unit === status.strategy.armyUnit);
+            }
         }
     </script>
 </body>

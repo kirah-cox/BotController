@@ -4,6 +4,9 @@ namespace Bot.UI.Game;
 
 public record StartRequest(string? Opponent, string? CreateMatch, string? JoinMatch, int? TickMs);
 
+// Any field left out keeps its current value.
+public record StrategyRequest(int? Workers, string? ArmyUnit, int? AttackSize);
+
 public record BotStatus(
     string Server,
     bool Registered,
@@ -16,6 +19,8 @@ public record BotStatus(
     int? Ore,
     int? Units,
     int? Buildings,
+    Plan Strategy,
+    IEnumerable<string> ArmyUnits,
     IReadOnlyList<string> Log);
 
 // Runs one bot at a time: signs up with the NetRTS server, gets into a match and plays it in the
@@ -37,6 +42,7 @@ public class BotController(NetRtsClient client, IHostEnvironment env, ILogger<Bo
     private string phase = "Idle";
     private MatchInfo? match;
     private GameState? state;
+    private Plan plan = new();
 
     public BotStatus GetStatus()
     {
@@ -56,6 +62,8 @@ public class BotController(NetRtsClient client, IHostEnvironment env, ILogger<Bo
                 state?.You.Resources,
                 state == null ? null : Strategy.MyUnits(state).Count,
                 state?.Buildings.Count(b => b.Owner == state.You.Slot),
+                plan,
+                Plan.ArmyCosts.Keys,
                 log.ToList());
         }
     }
@@ -78,6 +86,36 @@ public class BotController(NetRtsClient client, IHostEnvironment env, ILogger<Bo
         }
 
         Log($"Registered as {player.Name}.");
+    }
+
+    // Changes parts of the plan the bot follows; takes effect on the next tick, even mid-match.
+    public void UpdateStrategy(StrategyRequest request)
+    {
+        if (request.Workers is < 1 or > 50)
+        {
+            throw new InvalidOperationException("Workers must be between 1 and 50.");
+        }
+
+        if (request.AttackSize is < 1 or > 50)
+        {
+            throw new InvalidOperationException("Attack size must be between 1 and 50.");
+        }
+
+        if (request.ArmyUnit != null && !Plan.ArmyCosts.ContainsKey(request.ArmyUnit))
+        {
+            throw new InvalidOperationException($"Unknown army unit '{request.ArmyUnit}'.");
+        }
+
+        Plan updated;
+        lock (gate)
+        {
+            plan = updated = new Plan(
+                request.Workers ?? plan.Workers,
+                request.ArmyUnit ?? plan.ArmyUnit,
+                request.AttackSize ?? plan.AttackSize);
+        }
+
+        Log($"Strategy: {updated.Workers} workers, {updated.ArmyUnit}s, attack with {updated.AttackSize}.");
     }
 
     // Gets into a match (vs a house bot, a new named match, or an existing one) and starts playing it.
@@ -188,12 +226,14 @@ public class BotController(NetRtsClient client, IHostEnvironment env, ILogger<Bo
             SetPhase("Playing");
             while (current.Status != "Completed")
             {
+                Plan currentPlan;
                 lock (gate)
                 {
                     state = current;
+                    currentPlan = plan;
                 }
 
-                var commands = Strategy.Decide(current);
+                var commands = Strategy.Decide(current, currentPlan);
                 if (commands.Count > 0)
                 {
                     await client.SendCommandsAsync(matchId, commands, ct);

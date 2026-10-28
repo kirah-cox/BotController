@@ -26,6 +26,13 @@ public static class BotEndpoints
         bot.MapPost("/start", (StartRequest request, BotController controller) =>
             Run(() => controller.StartAsync(request), controller));
 
+        bot.MapPost("/strategy", (StrategyRequest request, BotController controller) =>
+            Run(() =>
+            {
+                controller.UpdateStrategy(request);
+                return Task.CompletedTask;
+            }, controller));
+
         bot.MapPost("/stop", (BotController controller) =>
             Run(controller.StopAsync, controller));
 
