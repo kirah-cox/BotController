@@ -31,19 +31,23 @@ public static class Strategy
             ore -= 50;
         }
 
-        var barracks = BuildBarracks(s, plan, ore);
-        if (barracks != null)
+        var beginningBuilding = BuildBeginningBuildings(s, plan, ore);
+        if (beginningBuilding != null)
         {
-            commands.Add(barracks);
-            ore -= 150;
+            commands.Add(beginningBuilding);
+            ore -= plan.BuildingCost;
         }
 
-        var soldier = TrainSoldier(s, plan, ore);
-        if (soldier != null)
+        var advancedBuilding = BuildAdvancedBuildings(s, plan, ore);
+        if (advancedBuilding != null)
         {
-            commands.Add(soldier);
-            ore -= plan.ArmyCost;
+            commands.Add(advancedBuilding);
+            ore -= plan.BuildingCost;
         }
+
+        commands.AddRange(ResearchUpgrades(s, ref ore));
+
+        commands.AddRange(TrainAttackers(s, plan, ref ore));
 
         var attack = Attack(s, plan);
         if (attack != null)
@@ -80,44 +84,101 @@ public static class Strategy
     }
 
     // 3. Then build one Barracks (150 ore), 4 tiles from the headquarters toward the middle of the map.
-    private static object? BuildBarracks(GameState s, Plan plan, int ore)
+    private static object? BuildBeginningBuildings(GameState s, Plan plan, int ore)
     {
         var workers = MyUnits(s, "Worker");
-        if (workers.Count < plan.Workers || MyBuilding(s, "Barracks") != null || ore < 150)
+        if (workers.Count < plan.Workers || ore < plan.BuildingCost|| plan.BuildingUnit == "TechLab" || plan.BuildingUnit == "GuardTower" || s.Buildings.Any(b => b.X == plan.BuildX && b.Y == plan.BuildY))
         {
             return null;
         }
 
         var hq = MyBuilding(s, "CommandCenter")!;
-        var x = hq.X < s.MapWidth / 2 ? hq.X + 4 : hq.X - 4;
-        var y = hq.Y < s.MapHeight / 2 ? hq.Y + 4 : hq.Y - 4;
-        return new { type = "Build", unitIds = new[] { workers[0].Id }, buildingType = "Barracks", x, y };
+        var x = plan.BuildX;
+        var y = plan.BuildY;
+        return new { type = "Build", unitIds = workers.Take(plan.Builders).Select(w => w.Id).ToArray(), buildingType = plan.BuildingUnit, x, y };
     }
 
-    // 4. The Barracks trains plan.ArmyUnit non-stop (a Soldier costs 100 ore).
-    private static object? TrainSoldier(GameState s, Plan plan, int ore)
+    private static object? BuildAdvancedBuildings(GameState s, Plan plan, int ore)
     {
+        var workers = MyUnits(s, "Worker");
         var barracks = MyBuilding(s, "Barracks");
-        if (barracks == null || !barracks.Completed || barracks.Production is { Count: > 0 } || ore < plan.ArmyCost)
+        if (workers.Count < plan.Workers || ore < plan.BuildingCost || plan.BuildingUnit == "Barracks" || plan.BuildingUnit == "ResourceDepot" || barracks == null || !barracks.Completed || s.Buildings.Any(b => b.X == plan.BuildX && b.Y == plan.BuildY))
         {
             return null;
         }
 
-        return new { type = "Produce", buildingId = barracks.Id, unitType = plan.ArmyUnit };
+        var hq = MyBuilding(s, "CommandCenter")!;
+        var x = plan.BuildX;
+        var y = plan.BuildY;
+        return new { type = "Build", unitIds = workers.Take(plan.Builders).Select(w => w.Id).ToArray(), buildingType = plan.BuildingUnit, x, y };
+    }
+
+    // 4. Every finished Barracks trains plan.ArmyUnit non-stop, 3 at a time (a Soldier costs 100 ore),
+    //    as long as there's ore for them.
+    private static List<object> TrainAttackers(GameState s, Plan plan, ref int ore)
+    {
+        const int count = 3;
+        var commands = new List<object>();
+        var allBarracks = s.Buildings.Where(b => b.Owner == s.You.Slot && b.Type == "Barracks" && b.Completed);
+        foreach (var barracks in allBarracks)
+        {
+            if (ore < plan.ArmyCost * count)
+            {
+                break;
+            }
+
+            commands.Add(new { type = "Produce", buildingId = barracks.Id, unitType = plan.ArmyUnit, count });
+            ore -= plan.ArmyCost * count;
+        }
+
+        return commands;
+    }
+
+    // The order the TechLabs research upgrades in, and the upgrade each one needs finished first.
+    private static readonly (string Name, int Cost, string? Requires)[] ResearchOrder =
+    [
+        ("Harvesting1", 100, null), ("Weapons1", 150, null), ("Armor1", 150, null), ("Mobility1", 100, null),
+        ("Harvesting2", 200, "Harvesting1"), ("Weapons2", 250, "Weapons1"), ("Armor2", 250, "Armor1"), ("Mobility2", 200, "Mobility1"),
+    ];
+
+    // Every finished, free TechLab researches the next upgrade on the list that we don't have, isn't
+    // already being researched, and whose tier 1 is finished.
+    private static List<object> ResearchUpgrades(GameState s, ref int ore)
+    {
+        var commands = new List<object>();
+        var done = s.You.Upgrades ?? [];
+        var taken = (s.You.Researching ?? []).Select(r => r.Upgrade).ToHashSet();
+        var busyLabs = (s.You.Researching ?? []).Select(r => r.BuildingId).ToHashSet();
+        var freeLabs = s.Buildings.Where(b => b.Owner == s.You.Slot && b.Type == "TechLab" && b.Completed && !busyLabs.Contains(b.Id));
+        foreach (var lab in freeLabs)
+        {
+            var next = ResearchOrder.FirstOrDefault(u =>
+                !done.Contains(u.Name) && !taken.Contains(u.Name) && (u.Requires == null || done.Contains(u.Requires)));
+            if (next.Name == null || ore < next.Cost)
+            {
+                break;  // nothing left we can research yet, or not enough ore for the next one
+            }
+
+            commands.Add(new { type = "Research", buildingId = lab.Id, upgrade = next.Name });
+            taken.Add(next.Name);
+            ore -= next.Cost;
+        }
+
+        return commands;
     }
 
     // 5. Once we have plan.AttackSize soldiers, send every idle soldier to attack the nearest enemy's starting corner.
     private static object? Attack(GameState s, Plan plan)
     {
-        var soldiers = MyUnits(s, plan.ArmyUnit);
-        if (soldiers.Count < plan.AttackSize)
+        var attacker = MyUnits(s, plan.ArmyUnit);
+        if (attacker.Count < plan.AttackSize)
         {
             return null;
         }
 
         var enemy = s.Players
             .Where(p => p.Slot != s.You.Slot && !p.Eliminated)
-            .MinBy(p => Math.Max(Math.Abs(p.StartPosition.X - soldiers[0].X), Math.Abs(p.StartPosition.Y - soldiers[0].Y)));
+            .MinBy(p => Math.Max(Math.Abs(p.StartPosition.X - attacker[0].X), Math.Abs(p.StartPosition.Y - attacker[0].Y)));
         if (enemy == null)
         {
             return null;

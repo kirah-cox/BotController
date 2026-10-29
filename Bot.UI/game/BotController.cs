@@ -5,7 +5,7 @@ namespace Bot.UI.Game;
 public record StartRequest(string? Opponent, string? CreateMatch, string? JoinMatch, int? TickMs);
 
 // Any field left out keeps its current value.
-public record StrategyRequest(int? Workers, string? ArmyUnit, int? AttackSize);
+public record StrategyRequest(int? Workers, string? ArmyUnit, int? AttackSize, string? BuildingUnit, int? BuildX, int? BuildY, int? Builders);
 
 public record BotStatus(
     string Server,
@@ -21,6 +21,7 @@ public record BotStatus(
     int? Buildings,
     Plan Strategy,
     IEnumerable<string> ArmyUnits,
+    IEnumerable<string> BuildingUnits,
     IReadOnlyList<string> Log);
 
 // Runs one bot at a time: signs up with the NetRTS server, gets into a match and plays it in the
@@ -64,6 +65,7 @@ public class BotController(NetRtsClient client, IHostEnvironment env, ILogger<Bo
                 state?.Buildings.Count(b => b.Owner == state.You.Slot),
                 plan,
                 Plan.ArmyCosts.Keys,
+                Plan.BuildingCosts.Keys,
                 log.ToList());
         }
     }
@@ -101,21 +103,46 @@ public class BotController(NetRtsClient client, IHostEnvironment env, ILogger<Bo
             throw new InvalidOperationException("Attack size must be between 1 and 50.");
         }
 
+        if (request.Builders is < 1 or > 50)
+        {
+            throw new InvalidOperationException("Builders must be between 1 and 50.");
+        }
+
         if (request.ArmyUnit != null && !Plan.ArmyCosts.ContainsKey(request.ArmyUnit))
         {
             throw new InvalidOperationException($"Unknown army unit '{request.ArmyUnit}'.");
         }
 
+        if (request.BuildingUnit != null && !Plan.BuildingCosts.ContainsKey(request.BuildingUnit))
+        {
+            throw new InvalidOperationException($"Unknown building '{request.BuildingUnit}'.");
+        }
+
         Plan updated;
         lock (gate)
         {
+            // The map size is only known once a match has started; until then just rule out negatives.
+            if (request.BuildX < 0 || request.BuildX >= state?.MapWidth)
+            {
+                throw new InvalidOperationException($"Build X must be between 0 and {(state?.MapWidth ?? 1) - 1}.");
+            }
+
+            if (request.BuildY < 0 || request.BuildY >= state?.MapHeight)
+            {
+                throw new InvalidOperationException($"Build Y must be between 0 and {(state?.MapHeight ?? 1) - 1}.");
+            }
+
             plan = updated = new Plan(
                 request.Workers ?? plan.Workers,
                 request.ArmyUnit ?? plan.ArmyUnit,
-                request.AttackSize ?? plan.AttackSize);
+                request.AttackSize ?? plan.AttackSize,
+                request.BuildingUnit ?? plan.BuildingUnit,
+                request.BuildX ?? plan.BuildX,
+                request.BuildY ?? plan.BuildY,
+                request.Builders ?? plan.Builders);
         }
 
-        Log($"Strategy: {updated.Workers} workers, {updated.ArmyUnit}s, attack with {updated.AttackSize}.");
+        Log($"Strategy: {updated.Workers} workers, {updated.ArmyUnit}s, attack with {updated.AttackSize}, build a {updated.BuildingUnit} at ({updated.BuildX}, {updated.BuildY}) with {updated.Builders} builders.");
     }
 
     // Gets into a match (vs a house bot, a new named match, or an existing one) and starts playing it.

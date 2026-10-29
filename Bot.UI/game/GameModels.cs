@@ -19,7 +19,9 @@ public record GameState(
     List<Building> Buildings,
     List<Ore> Resources);
 
-public record Me(int Slot, int Resources);
+public record Me(int Slot, int Resources, List<string>? Upgrades, List<ResearchItem>? Researching);
+
+public record ResearchItem(string Upgrade, int Percent, int BuildingId);
 
 public record PlayerInfo(int Slot, string Name, bool Eliminated, Spot StartPosition, Score? Score);
 

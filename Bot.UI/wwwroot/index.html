@@ -30,7 +30,7 @@
         .setting { display: flex; align-items: center; gap: 0.5rem; margin: 0.25rem 0; }
         .setting > span:first-child { width: 11rem; }
         .setting strong { min-width: 2rem; text-align: center; }
-        #army-unit-buttons button.active { font-weight: bold; outline: 2px solid #1a73e8; }
+        #army-unit-buttons button.active, #building-unit-buttons button.active { font-weight: bold; outline: 2px solid #1a73e8; }
     </style>
 </head>
 <body>
@@ -89,6 +89,26 @@
             <strong id="attackSize-value">-</strong>
             <button data-setting="attackSize" data-step="1">+</button>
         </div>
+        <div class="setting">
+            <span>Building to make</span>
+            <span id="building-unit-buttons"></span>
+        </div>
+        <div class="setting">
+            <span>Build at</span>
+            <label>X <input id="build-x" type="number" min="0" value="0" style="width: 4rem"></label>
+            <label>Y <input id="build-y" type="number" min="0" value="0" style="width: 4rem"></label>
+        </div>
+        <div class="setting">
+            <span>Workers per building</span>
+            <button data-setting="builders" data-step="-1">&minus;</button>
+            <strong id="builders-value">-</strong>
+            <button data-setting="builders" data-step="1">+</button>
+        </div>
+        <div>
+            <button id="apply-strategy-button" disabled>Apply strategy</button>
+            <button id="discard-strategy-button" disabled>Discard changes</button>
+            <span id="strategy-pending" class="hidden">Unsaved changes; the bot is still using the old strategy.</span>
+        </div>
     </section>
 
     <!-- Step 3: watch it play -->
@@ -110,6 +130,9 @@
 
     <script>
         const busyPhases = ["Joining", "Waiting for players", "Playing"];
+        let lastStatus = null;
+        // Strategy changes not yet applied; null means the page just shows what the bot is using.
+        let draft = null;
 
         window.addEventListener("load", () => {
             checkHealth();
@@ -129,14 +152,31 @@
             document.getElementById("stop-button").addEventListener("click", () =>
                 post("/api/bot/stop"));
 
-            // The - / + buttons nudge one number in the plan.
+            // The - / + buttons nudge one number in the draft plan.
             for (const button of document.querySelectorAll("[data-setting]")) {
                 button.addEventListener("click", () => {
                     const setting = button.dataset.setting;
-                    const current = Number(document.getElementById(`${setting}-value`).textContent);
-                    post("/api/bot/strategy", { [setting]: current + Number(button.dataset.step) });
+                    editDraft({ [setting]: shownPlan()[setting] + Number(button.dataset.step) });
                 });
             }
+
+            for (const setting of ["buildX", "buildY"]) {
+                const input = document.getElementById(setting === "buildX" ? "build-x" : "build-y");
+                input.addEventListener("input", () => editDraft({ [setting]: Number(input.value) }));
+            }
+
+            // Only Apply sends the plan to the bot.
+            document.getElementById("apply-strategy-button").addEventListener("click", async () => {
+                if (await post("/api/bot/strategy", draft)) {
+                    draft = null;
+                    showStrategies(lastStatus);
+                }
+            });
+
+            document.getElementById("discard-strategy-button").addEventListener("click", () => {
+                draft = null;
+                showStrategies(lastStatus);
+            });
 
             refreshStatus();
             setInterval(refreshStatus, 1000);
@@ -158,6 +198,7 @@
         }
 
         // Sends a command to our backend, then shows the status it answers with (or its error).
+        // Returns whether it worked.
         async function post(url, body) {
             const error = document.getElementById("error");
             error.textContent = "";
@@ -170,11 +211,13 @@
                 const data = await response.json();
                 if (!response.ok) {
                     error.textContent = data.message ?? `Request failed (${response.status})`;
-                    return;
+                    return false;
                 }
                 showStatus(data);
+                return true;
             } catch (e) {
                 error.textContent = `Request failed: ${e.message}`;
+                return false;
             }
         }
 
@@ -189,6 +232,7 @@
 
         function showStatus(status) {
             const busy = busyPhases.includes(status.phase);
+            lastStatus = status;
 
             const server = document.getElementById("server");
             server.textContent = status.server;
@@ -224,24 +268,53 @@
             document.getElementById("log").textContent = status.log.join("\n");
         }
 
-        // Shows the current plan: the numbers, plus one button per army unit with the chosen one highlighted.
-        function showStrategies(status) {
-            document.getElementById("workers-value").textContent = status.strategy.workers;
-            document.getElementById("attackSize-value").textContent = status.strategy.attackSize;
+        // The plan the page shows: the draft if there is one, otherwise the bot's current plan.
+        function shownPlan() {
+            return draft ?? lastStatus.strategy;
+        }
 
-            const units = document.getElementById("army-unit-buttons");
-            if (units.children.length !== status.armyUnits.length) {
-                units.replaceChildren(...status.armyUnits.map(unit => {
+        // Changes some settings in the draft (starting it from the bot's plan if needed) without sending anything.
+        function editDraft(changes) {
+            draft = { ...shownPlan(), ...changes };
+            showStrategies(lastStatus);
+        }
+
+        // Shows the plan: the numbers, plus one button per army unit and per building with the chosen ones highlighted.
+        function showStrategies(status) {
+            const plan = shownPlan();
+            document.getElementById("workers-value").textContent = plan.workers;
+            document.getElementById("attackSize-value").textContent = plan.attackSize;
+            document.getElementById("builders-value").textContent = plan.builders;
+
+            // Don't overwrite the X / Y boxes while they're being edited.
+            if (!draft) {
+                document.getElementById("build-x").value = plan.buildX;
+                document.getElementById("build-y").value = plan.buildY;
+            }
+
+            showChoices("army-unit-buttons", status.armyUnits, "armyUnit", plan.armyUnit);
+            showChoices("building-unit-buttons", status.buildingUnits, "buildingUnit", plan.buildingUnit);
+
+            document.getElementById("apply-strategy-button").disabled = !draft;
+            document.getElementById("discard-strategy-button").disabled = !draft;
+            document.getElementById("strategy-pending").classList.toggle("hidden", !draft);
+        }
+
+        // Fills a row with one button per option; clicking one sets that setting in the draft.
+        function showChoices(id, options, setting, chosen) {
+            const row = document.getElementById(id);
+            if (row.children.length !== options.length) {
+                row.replaceChildren(...options.map(option => {
                     const button = document.createElement("button");
-                    button.textContent = unit;
-                    button.dataset.unit = unit;
-                    button.addEventListener("click", () => post("/api/bot/strategy", { armyUnit: unit }));
+                    button.textContent = option;
+                    button.dataset.option = option;
+                    button.addEventListener("click", () => editDraft({ [setting]: option }));
                     return button;
                 }));
             }
 
-            for (const button of units.children) {
-                button.classList.toggle("active", button.dataset.unit === status.strategy.armyUnit);
+            for (const button of row.children) {
+                button.classList.toggle("active", button.dataset.option === chosen);
             }
         }
     </script>
